@@ -57,11 +57,12 @@ with st.sidebar:
     )
 
 
-# --- HÀM TRÍCH XUẤT THÔNG TIN HÀNH KHÁCH BẰNG AI ---
+# --- HÀM TRÍCH XUẤT THÔNG TIN HÀNH KHÁCH BẰNG AI (ĐÃ XỬ LÝ CHUỖI URL) ---
 def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
-    list_models_url = (
-        f"[https://generativelanguage.googleapis.com/v1beta/models?key=](https://generativelanguage.googleapis.com/v1beta/models?key=){key}"
-    )
+    # Làm sạch API Key (loại bỏ hoàn toàn khoảng trắng, ký tự xuống dòng thừa)
+    clean_key = str(key).strip().strip('"').strip("'")
+
+    list_models_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={clean_key}"
     available_models = []
     try:
         res_models = requests.get(list_models_url, timeout=10)
@@ -119,7 +120,10 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
 
     last_error_msg = ""
     for model_name in available_models:
-        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={key}"
+        # Loại bỏ gạch chéo đầu nếu có để URL không bị gãy
+        clean_model = model_name.lstrip("/")
+        url = f"https://generativelanguage.googleapis.com/v1beta/{clean_model}:generateContent?key={clean_key}"
+
         response = requests.post(
             url, headers=headers, data=json.dumps(payload), timeout=60
         )
@@ -145,7 +149,6 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
             last_error_msg = response.text
 
     raise Exception(f"Lỗi kết nối API: {last_error_msg}")
-
 
 # --- GIAO DIỆN CHÍNH ---
 col_upload, col_result = st.columns([1, 2], gap="large")
