@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-# Tải biến môi trường (local .env hoặc Streamlit Secrets)
+# Tải biến môi trường (Secrets trên Streamlit Cloud hoặc .env dưới local)
 load_dotenv()
 
 api_key = ""
@@ -21,7 +21,7 @@ except Exception:
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY", "")
 
-# --- CẤU HÌNH GIAO DIỆN ---
+# --- CẤU HÌNH GIAO DIỆN WEB ---
 st.set_page_config(
     page_title="Lập Danh Sách Hành Khách Xuất Bến",
     page_icon="🚢",
@@ -30,13 +30,13 @@ st.set_page_config(
 
 st.title("🚢 Hệ Thống Tự Động Lập Danh Sách Hành Khách Xuất Bến (Mẫu 04)")
 
-# --- SIDEBAR CẤU HÌNH TÀU ---
+# --- SIDEBAR THÔNG TIN TÀU ---
 with st.sidebar:
     st.header("⚙️ Thông Tin Tàu & Chuyến Đi")
     if api_key:
         st.success("🟢 AI sẵn sàng xử lý")
     else:
-        st.error("🔴 Chưa cấu hình API Key!")
+        st.error("🔴 Chưa cấu hình API Key trên Server!")
 
     ship_name = st.text_input("Tên tàu thuyền", value="San Hô Đỏ")
     ship_code = st.text_input("Số đăng ký", value="HP – 5595")
@@ -49,17 +49,48 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("👉 **Hướng dẫn:** Tải lên hàng loạt ảnh/PDF CCCD hoặc Hộ chiếu của hành khách để AI tự động bóc tách thông tin vào bảng.")
+    st.markdown(
+        "👉 **Hướng dẫn:**\n"
+        "1. Tải lên hàng loạt ảnh/PDF CCCD, Passport.\n"
+        "2. Nhấn **Quét & Tạo Danh Sách Hành Khách**.\n"
+        "3. Chỉnh sửa dữ liệu trực tiếp trên bảng nếu cần và tải về file Excel."
+    )
 
 
-# --- HÀM TRÍCH XUẤT THÔNG TIN HÀNH KHÁCH BẰNG GEMINI ---
+# --- HÀM TRÍCH XUẤT THÔNG TIN HÀNH KHÁCH BẰNG AI ---
 def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+    # 1. Tự động lấy danh sách Model khả thi từ Google API
+    list_models_url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+    )
+    available_models = []
+    try:
+        res_models = requests.get(list_models_url, timeout=10)
+        if res_models.status_code == 200:
+            models_data = res_models.json().get("models", [])
+            for m in models_data:
+                if "generateContent" in m.get(
+                    "supportedGenerationMethods", []
+                ):
+                    name = m.get("name")
+                    if "flash" in name or "pro" in name:
+                        available_models.append(name)
+    except Exception:
+        pass
 
+    # Nếu không tự lấy được, dùng danh sách tên model chuẩn dự phòng
+    if not available_models:
+        available_models = [
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-2.0-flash-exp",
+            "models/gemini-1.5-pro-latest",
+        ]
+
+    # 2. Đóng gói Prompt và dữ liệu các file đính kèm
     parts = []
     prompt = """
     Phân tích toàn bộ các file hình ảnh/PDF (CCCD, Hộ chiếu) được gửi lên.
-    Mỗi ảnh/trang tài liệu có thể là của 1 hành khách.
+    Mỗi ảnh hoặc trang tài liệu có thể là thông tin của 1 hành khách.
     Hãy trích xuất danh sách thông tin hành khách chính xác theo định dạng JSON Array chứa các Object sau:
     [
         {
@@ -74,7 +105,7 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
     ]
     Lưu ý:
     - Nếu có nhiều file, trích xuất tất cả hành khách từ tất cả các file.
-    - Chỉ trả về duy nhất chuỗi JSON Array thuần túy, không chứa markdown hay câu giải thích.
+    - Chỉ trả về duy nhất chuỗi JSON Array thuần túy, không chứa markdown hay bất kỳ câu giải thích nào.
     """
     parts.append({"text": prompt})
 
@@ -89,98 +120,21 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": parts}]}
 
-    response = requests.post(
-        url, headers=headers, data=json.dumps(payload), timeout=60
-    )
-
-    if response.status_code == 200:
-        res_json = response.json()
-        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-        clean_text = (
-            raw_text.strip().replace("```json", "").replace("```", "").strip()
-        )
-        return json.loads(clean_text)
-    else:
-        raise Exception(f"Lỗi API: {response.text}")
-
-
-# --- GIAO DIỆN CHÍNH ---
-col_upload, col_result = st.columns([1, 2], gap="large")
-
-with col_upload:
-    st.subheader("1. Tải lên CCCD / Hộ chiếu")
-    uploaded_files = st.file_uploader(
-        "Kéo thả hàng loạt ảnh/PDF CCCD, Passport của khách",
-        type=["jpg", "jpeg", "png", "webp", "pdf"],
-        accept_multiple_files=True,
-    )
-
-    if uploaded_files:
-        st.info(f"Đã chọn **{len(uploaded_files)}** file tài liệu.")
-        if st.button(
-            "🚀 Quét & Tạo Danh Sách Hành Khách",
-            type="primary",
-            use_container_width=True,
-        ):
-            if not api_key:
-                st.error("Chưa cấu hình API Key!")
-            else:
-                with st.spinner("AI đang quét dữ liệu giấy tờ..."):
-                    try:
-                        passengers = extract_passengers_from_files(
-                            uploaded_files, api_key
-                        )
-                        st.session_state["passengers_list"] = passengers
-                        st.success("Trích xuất danh sách thành công!")
-                    except Exception as e:
-                        st.error(f"Lỗi xử lý: {e}")
-
-with col_result:
-    st.subheader("2. Danh sách hành khách trích xuất (Mẫu 04)")
-
-    if "passengers_list" in st.session_state and st.session_state["passengers_list"]:
-        data_list = st.session_state["passengers_list"]
-
-        # Chuyển đổi thành DataFrame để hiển thị bảng
-        df = pd.DataFrame(data_list)
-        df.insert(0, "STT", range(1, len(df) + 1))
-        df.rename(
-            columns={
-                "full_name": "Họ và tên",
-                "birth_year": "Năm sinh",
-                "gender": "Giới tính",
-                "nationality": "Quốc tịch",
-                "address": "Địa chỉ",
-                "id_card": "Số CCCD / Hộ chiếu",
-                "note": "Ghi chú",
-            },
-            inplace=True,
+    # 3. Thử lần lượt từng Model cho đến khi thành công
+    last_error_msg = ""
+    for model_name in available_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={key}"
+        response = requests.post(
+            url, headers=headers, data=json.dumps(payload), timeout=60
         )
 
-        # Cho phép người dùng trực tiếp chỉnh sửa dữ liệu trên bảng
-        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-
-        # Thống kê nhanh
-        total_pax = len(edited_df)
-        nam_count = (edited_df["Giới tính"] == "Nam").sum()
-        nu_count = (edited_df["Giới tính"] == "Nữ").sum()
-        vn_count = (edited_df["Quốc tịch"] == "VN").sum()
-        nn_count = total_pax - vn_count
-
-        st.markdown(
-            f"📊 **Tổng số hành khách:** {total_pax} người | **Nam:** {nam_count} | **Nữ:** {nu_count} | **Việt Nam:** {vn_count} | **Nước ngoài:** {nn_count}"
-        )
-
-        # Xuất file Excel
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            edited_df.to_excel(writer, index=False, sheet_name="Danh_Sach_Hanh_Khach")
-
-        st.download_button(
-            label="📥 Tải về Danh sách Hành khách (.xlsx)",
-            data=output.getvalue(),
-            file_name=f"Danh_sach_hanh_khach_{ship_name}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
-        )
+        if response.status_code == 200:
+            res_json = response.json()
+            try:
+                raw_text = res_json["candidates"][0]["content"]["parts"][0][
+                    "text"
+                ]
+                clean_text = (
+                    raw_text.strip()
+                    .replace("```json", "")
+                    .replace("
