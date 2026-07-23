@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-# Tải biến môi trường (Secrets trên Streamlit Cloud hoặc .env dưới local)
+# Tải biến môi trường
 load_dotenv()
 
 api_key = ""
@@ -59,9 +59,8 @@ with st.sidebar:
 
 # --- HÀM TRÍCH XUẤT THÔNG TIN HÀNH KHÁCH BẰNG AI ---
 def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
-    # 1. Tự động lấy danh sách Model khả thi từ Google API
     list_models_url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        f"[https://generativelanguage.googleapis.com/v1beta/models?key=](https://generativelanguage.googleapis.com/v1beta/models?key=){key}"
     )
     available_models = []
     try:
@@ -78,7 +77,6 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
     except Exception:
         pass
 
-    # Nếu không tự lấy được, dùng danh sách tên model chuẩn dự phòng
     if not available_models:
         available_models = [
             "models/gemini-1.5-flash-latest",
@@ -86,7 +84,6 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
             "models/gemini-1.5-pro-latest",
         ]
 
-    # 2. Đóng gói Prompt và dữ liệu các file đính kèm
     parts = []
     prompt = """
     Phân tích toàn bộ các file hình ảnh/PDF (CCCD, Hộ chiếu) được gửi lên.
@@ -120,10 +117,9 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": parts}]}
 
-    # 3. Thử lần lượt từng Model cho đến khi thành công
     last_error_msg = ""
     for model_name in available_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={key}"
+        url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){model_name}:generateContent?key={key}"
         response = requests.post(
             url, headers=headers, data=json.dumps(payload), timeout=60
         )
@@ -134,7 +130,103 @@ def extract_passengers_from_files(uploaded_files: list, key: str) -> list:
                 raw_text = res_json["candidates"][0]["content"]["parts"][0][
                     "text"
                 ]
-                clean_text = (
-                    raw_text.strip()
-                    .replace("```json", "")
-                    .replace("
+                clean_text = raw_text.strip()
+                if clean_text.startswith("```json"):
+                    clean_text = clean_text[7:]
+                if clean_text.startswith("```"):
+                    clean_text = clean_text[3:]
+                if clean_text.endswith("```"):
+                    clean_text = clean_text[:-3]
+                clean_text = clean_text.strip()
+                return json.loads(clean_text)
+            except Exception as e:
+                raise Exception(f"Lỗi đọc dữ liệu JSON từ AI: {e}")
+        else:
+            last_error_msg = response.text
+
+    raise Exception(f"Lỗi kết nối API: {last_error_msg}")
+
+
+# --- GIAO DIỆN CHÍNH ---
+col_upload, col_result = st.columns([1, 2], gap="large")
+
+with col_upload:
+    st.subheader("1. Tải lên CCCD / Hộ chiếu")
+    uploaded_files = st.file_uploader(
+        "Kéo thả hoặc chọn nhiều ảnh/PDF CCCD, Passport của khách",
+        type=["jpg", "jpeg", "png", "webp", "pdf"],
+        accept_multiple_files=True,
+    )
+
+    if uploaded_files:
+        st.info(f"Đã chọn **{len(uploaded_files)}** file tài liệu.")
+        if st.button(
+            "🚀 Quét & Tạo Danh Sách Hành Khách",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not api_key:
+                st.error("Chưa cấu hình API Key!")
+            else:
+                with st.spinner("AI đang quét dữ liệu giấy tờ..."):
+                    try:
+                        passengers = extract_passengers_from_files(
+                            uploaded_files, api_key
+                        )
+                        st.session_state["passengers_list"] = passengers
+                        st.success("Trích xuất danh sách thành công!")
+                    except Exception as e:
+                        st.error(f"Lỗi xử lý: {e}")
+
+with col_result:
+    st.subheader("2. Danh sách hành khách trích xuất (Mẫu 04)")
+
+    if (
+        "passengers_list" in st.session_state
+        and st.session_state["passengers_list"]
+    ):
+        data_list = st.session_state["passengers_list"]
+
+        df = pd.DataFrame(data_list)
+        df.insert(0, "STT", range(1, len(df) + 1))
+        df.rename(
+            columns={
+                "full_name": "Họ và tên",
+                "birth_year": "Năm sinh",
+                "gender": "Giới tính",
+                "nationality": "Quốc tịch",
+                "address": "Địa chỉ",
+                "id_card": "Số CCCD / Hộ chiếu",
+                "note": "Ghi chú",
+            },
+            inplace=True,
+        )
+
+        edited_df = st.data_editor(
+            df, num_rows="dynamic", use_container_width=True
+        )
+
+        total_pax = len(edited_df)
+        nam_count = (edited_df["Giới tính"] == "Nam").sum()
+        nu_count = (edited_df["Giới tính"] == "Nữ").sum()
+        vn_count = (edited_df["Quốc tịch"] == "VN").sum()
+        nn_count = total_pax - vn_count
+
+        st.markdown(
+            f"📊 **Tổng số hành khách:** {total_pax} người | **Nam:** {nam_count} | **Nữ:** {nu_count} | **Việt Nam:** {vn_count} | **Nước ngoài:** {nn_count}"
+        )
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            edited_df.to_excel(
+                writer, index=False, sheet_name="Danh_Sach_Hanh_Khach"
+            )
+
+        st.download_button(
+            label="📥 Tải về Danh sách Hành khách (.xlsx)",
+            data=output.getvalue(),
+            file_name=f"Danh_sach_hanh_khach_{ship_name}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )
