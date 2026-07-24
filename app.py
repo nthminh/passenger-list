@@ -180,7 +180,6 @@ with col_upload:
                         st.success("Trích xuất danh sách thành công!")
                     except Exception as e:
                         st.error(f"Lỗi xử lý: {e}")
-
 with col_result:
     st.subheader("2. Danh sách hành khách trích xuất (Mẫu 04)")
 
@@ -191,34 +190,86 @@ with col_result:
         data_list = st.session_state["passengers_list"]
 
         df = pd.DataFrame(data_list)
-        df.insert(0, "STT", range(1, len(df) + 1))
+
+        # --- XỬ LÝ TÁCH CỘT NĂM SINH THEO GIỚI TÍNH (NAM / NỮ) ---
+        df["Nam"] = df.apply(
+            lambda r: str(r.get("birth_year", ""))
+            if str(r.get("gender", "")).lower() == "nam"
+            else "",
+            axis=1,
+        )
+        df["Nữ"] = df.apply(
+            lambda r: str(r.get("birth_year", ""))
+            if str(r.get("gender", "")).lower() in ["nữ", "nu"]
+            else "",
+            axis=1,
+        )
+
+        # Đổi tên các cột còn lại cho chuẩn Mẫu 04
         df.rename(
             columns={
-                "full_name": "Họ và tên",
-                "birth_year": "Năm sinh",
-                "gender": "Giới tính",
-                "nationality": "Quốc tịch",
+                "full_name": "Họ và Tên",
                 "address": "Địa chỉ",
-                "id_card": "Số CCCD / Hộ chiếu",
+                "nationality": "Quốc tịch",
+                "id_card": "Số hộ chiếu/ số định danh cá nhân",
                 "note": "Ghi chú",
             },
             inplace=True,
         )
 
+        # Thêm cột STT ở đầu
+        df.insert(0, "STT", range(1, len(df) + 1))
+
+        # Sắp xếp lại thứ tự cột đúng theo Mẫu 04 (STT | Họ và Tên | Nam | Nữ | Địa chỉ | Quốc tịch | Số hộ chiếu/CCCD | Ghi chú)
+        column_order = [
+            "STT",
+            "Họ và Tên",
+            "Nam",
+            "Nữ",
+            "Địa chỉ",
+            "Quốc tịch",
+            "Số hộ chiếu/ số định danh cá nhân",
+            "Ghi chú",
+        ]
+        # Giữ lại các cột có trong DataFrame để tránh lỗi nếu thiếu dữ liệu
+        existing_cols = [col for col in column_order if col in df.columns]
+        df = df[existing_cols]
+
+        # Hiển thị bảng cho phép chỉnh sửa
         edited_df = st.data_editor(
             df, num_rows="dynamic", use_container_width=True
         )
 
+        # --- TÍNH THỐNG KÊ ---
         total_pax = len(edited_df)
-        nam_count = (edited_df["Giới tính"] == "Nam").sum()
-        nu_count = (edited_df["Giới tính"] == "Nữ").sum()
-        vn_count = (edited_df["Quốc tịch"] == "VN").sum()
+        nam_count = (
+            edited_df["Nam"].astype(str).str.strip().ne("").sum()
+            if "Nam" in edited_df
+            else 0
+        )
+        nu_count = (
+            edited_df["Nữ"].astype(str).str.strip().ne("").sum()
+            if "Nữ" in edited_df
+            else 0
+        )
+
+        # Quốc tịch VN / Nước ngoài
+        vn_count = (
+            (edited_df["Quốc tịch"].astype(str).str.upper() == "VN")
+            | (
+                edited_df["Quốc tịch"]
+                .astype(str)
+                .str.lower()
+                .str.contains("việt nam")
+            )
+        ).sum() if "Quốc tịch" in edited_df else 0
         nn_count = total_pax - vn_count
 
         st.markdown(
             f"📊 **Tổng số hành khách:** {total_pax} người | **Nam:** {nam_count} | **Nữ:** {nu_count} | **Việt Nam:** {vn_count} | **Nước ngoài:** {nn_count}"
         )
 
+        # --- XUẤT FILE EXCEL ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             edited_df.to_excel(
